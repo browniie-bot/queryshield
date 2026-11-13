@@ -124,6 +124,14 @@ def create_checkout_session(tenant_id: str, tier: str, success_url: str, cancel_
     return session_obj.url
 
 
+def _field(obj, key, default=None):
+    """Read a key from a StripeObject (not a dict since v15) or a plain dict."""
+    try:
+        return obj[key]
+    except (KeyError, TypeError, AttributeError):
+        return default
+
+
 def handle_webhook(payload: bytes, signature: str) -> dict:
     """Process a Stripe webhook event. Returns a small status dict."""
     stripe = _stripe()
@@ -136,18 +144,19 @@ def handle_webhook(payload: bytes, signature: str) -> dict:
 
     etype = event["type"]
     obj = event["data"]["object"]
-    tenant_id = (obj.get("metadata") or {}).get("tenant_id") if isinstance(obj, dict) else None
+    metadata = _field(obj, "metadata") or {}
+    tenant_id = _field(metadata, "tenant_id")
 
     if etype == "checkout.session.completed":
-        tier = (obj.get("metadata") or {}).get("tier", "starter")
+        tier = _field(metadata, "tier", "starter")
         if tenant_id:
-            _set_tenant_subscription(tenant_id, tier=tier, subscription_id=obj.get("subscription"))
+            _set_tenant_subscription(tenant_id, tier=tier, subscription_id=_field(obj, "subscription"))
             log.info("billing: tenant %s upgraded to %s", tenant_id, tier)
 
     elif etype in {"customer.subscription.deleted", "customer.subscription.updated"}:
         # Subscription ended or downgraded — drop to starter on cancel.
-        cancel_at_period_end = obj.get("cancel_at_period_end")
-        status = obj.get("status")
+        cancel_at_period_end = _field(obj, "cancel_at_period_end")
+        status = _field(obj, "status")
         if status in {"canceled", "incomplete_expired", "unpaid"}:
             if tenant_id:
                 _set_tenant_subscription(tenant_id, tier="starter")
